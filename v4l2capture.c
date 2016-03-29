@@ -29,8 +29,44 @@
 #  define Py_TYPE(ob) (((PyObject*)(ob))->ob_type)
 #endif
 
+#if PY_MAJOR_VERSION >= 3
+static PyObject *initmodule(char *m_name, PyModuleDef_Slot* m_methods,
+			    char *m_doc)
+{
+  static struct PyModuleDef moduledef = {
+    PyModuleDef_HEAD_INIT,
+    m_name,
+    m_doc,
+    -1,
+    m_methods,
+    NULL,
+    NULL,
+    NULL,
+    NULL
+  };
+
+  return PyModule_Create(&moduledef);
+}
+#endif
+
 #if PY_MAJOR_VERSION < 3
 #  define PyLong_FromLong PyInt_FromLong
+
+#  define PYOBJECT_HEAD_INIT(TYPE, SZ)	PyObject_HEAD_INIT(TYPE) SZ,
+#  define INIT_V4L2_CAPTURE(X)		initv4l2capture(X)
+#  define PYSTRING_FROM_STRING(NAME)	PyString_FromString(NAME)
+#  define PYSTRING_FROM_STR_SZ(V, LEN)	PyString_FromStringAndSize(V, LEN)
+#  define PYMODINIT_FUNC_RETURN(RET)
+#  define PY_INITMODULE(NAME, MTDS, DOC)	\
+  Py_InitModule3(NAME, MTDS, DOC)
+#else /* PY_MAJOR_VERSION >= 3 */
+#  define PYOBJECT_HEAD_INIT(TYPE, SZ)	PyVarObject_HEAD_INIT(TYPE, SZ)
+#  define INIT_V4L2_CAPTURE(X)		PyInit_v4l2capture(X)
+#  define PYSTRING_FROM_STRING(NAME)	PyBytes_FromString(NAME)
+#  define PYSTRING_FROM_STR_SZ(V, LEN)	PyBytes_FromStringAndSize(V, LEN)
+#  define PYMODINIT_FUNC_RETURN(RET)	(RET)
+#  define PY_INITMODULE(NAME, MTDS, DOC)	\
+  initmodule(NAME, MTDS, DOC)
 #endif
 
 #define ASSERT_OPEN if(self->fd < 0) { \
@@ -175,11 +211,7 @@ static PyObject *Video_device_get_info(
 
   while ((void *) capability < (void *) capabilities + sizeof(capabilities)) {
     if (caps.capabilities & capability->id) {
-#if PY_MAJOR_VERSION < 3
-      PyObject *s = PyString_FromString(capability->name);
-#else
-      PyObject *s = PyBytes_FromString(capability->name);
-#endif
+      PyObject *s = PYSTRING_FROM_STRING(capability->name);
 
       if (!s) {
         Py_DECREF(set);
@@ -223,7 +255,7 @@ static PyObject *Video_device_set_format(
   CLEAR(format);
   format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
   /*
-     Get the current format 
+     Get the current format
    */
   if (my_ioctl(self->fd, VIDIOC_G_FMT, &format)) {
     return NULL;
@@ -293,7 +325,7 @@ static PyObject *Video_device_get_format(
   format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
   /*
-     Get the current format 
+     Get the current format
    */
   if (my_ioctl(self->fd, VIDIOC_G_FMT, &format)) {
     return NULL;
@@ -778,13 +810,8 @@ static PyObject *Video_device_read_internal(
   }
 
 #ifdef USE_LIBV4L
-#  if PY_MAJOR_VERSION < 3
-  PyObject *result = PyString_FromStringAndSize(
-#  else
-  PyObject *result = PyBytes_FromStringAndSize(
-#  endif
-                                                self->buffers[buffer.index].
-                                                start, buffer.bytesused);
+  PyObject *result = PYSTRING_FROM_STR_SZ(self->buffers[buffer.index].
+					  start, buffer.bytesused);
 
   if (!result) {
     return NULL;
@@ -794,11 +821,7 @@ static PyObject *Video_device_read_internal(
   // For the byte order, see: http://v4l2spec.bytesex.org/spec/r4339.htm
   // For the color conversion, see: http://v4l2spec.bytesex.org/spec/x2123.htm
   int length = buffer.bytesused * 6 / 4;
-#  if PY_MAJOR_VERSION < 3
-  PyObject *result = PyString_FromStringAndSize(NULL, length);
-#  else
-  PyObject *result = PyBytes_FromStringAndSize(NULL, length);
-#  endif
+  PyObject *result = PYSTRING_FROM_STR_SZ(NULL, length);
 
   if (!result) {
     return NULL;
@@ -955,11 +978,7 @@ static PyMethodDef Video_device_methods[] = {
 };
 
 static PyTypeObject Video_device_type = {
-#if PY_MAJOR_VERSION < 3
-  PyObject_HEAD_INIT(NULL) 0,
-#else
-  PyVarObject_HEAD_INIT(NULL, 0)
-#endif
+  PYOBJECT_HEAD_INIT(NULL, 0)
     "v4l2capture.Video_device", sizeof(Video_device), 0,
   (destructor) Video_device_dealloc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
   0, Py_TPFLAGS_DEFAULT, "Video_device(path)\n\nOpens the video device at "
@@ -973,56 +992,27 @@ static PyMethodDef module_methods[] = {
   {NULL}
 };
 
-#if PY_MAJOR_VERSION < 3
-PyMODINIT_FUNC initv4l2capture(
-  void)
-#else
-PyMODINIT_FUNC PyInit_v4l2capture(
-  void)
-#endif
+
+PyMODINIT_FUNC INIT_V4L2_CAPTURE(void)
 {
   Video_device_type.tp_new = PyType_GenericNew;
 
   if (PyType_Ready(&Video_device_type) < 0) {
-#if PY_MAJOR_VERSION < 3
-    return;
-#else
-    return NULL;
-#endif
+    return PYMODINIT_FUNC_RETURN(NULL);
   }
 
   PyObject *module;
 
-#if PY_MAJOR_VERSION < 3
-  module = Py_InitModule3("v4l2capture", module_methods,
-                          "Capture video with video4linux2.");
-#else
-  static struct PyModuleDef moduledef = {
-    PyModuleDef_HEAD_INIT,
-    "v4l2capture",
-    "Capture video with video4linux2.",
-    -1,
-    module_methods,
-    NULL,
-    NULL,
-    NULL,
-    NULL
-  };
-  module = PyModule_Create(&moduledef);
-#endif
+  module = PY_INITMODULE("v4l2capture", module_methods,
+			 "Capture video with video4linux2.");
 
   if (!module) {
-#if PY_MAJOR_VERSION < 3
-    return;
-#else
-    return NULL;
-#endif
+    return PYMODINIT_FUNC_RETURN(NULL);
   }
 
   Py_INCREF(&Video_device_type);
   PyModule_AddObject(module, "Video_device",
                      (PyObject *) & Video_device_type);
-#if PY_MAJOR_VERSION >= 3
-  return module;
-#endif
+
+  return PYMODINIT_FUNC_RETURN(module);
 }
