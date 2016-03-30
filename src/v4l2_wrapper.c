@@ -1,6 +1,6 @@
 /**
- * @file v4l2capture.c
- * \brief Python extension to capture video with video4linux2
+ * @file v4l2_wrapper.c
+ * \brief pyv4l2: Python extension for video4linux2
  *
  * 2009, 2010, 2011 Fredrik Portstrom
  * 2016 Jimmy Durand Wesolowski
@@ -44,20 +44,16 @@
 #  define PyLong_FromLong PyInt_FromLong
 
 #  define PYOBJECT_HEAD_INIT(TYPE, SZ)	PyObject_HEAD_INIT(TYPE) SZ,
-#  define INIT_V4L2_CAPTURE(X)		initv4l2capture(X)
+#  define INIT_V4L2_CAPTURE(X)		initpyv4l2(X)
 #  define PYSTRING_FROM_STRING(NAME)	PyString_FromString(NAME)
 #  define PYSTRING_FROM_STR_SZ(V, LEN)	PyString_FromStringAndSize(V, LEN)
 #  define PYMODINIT_FUNC_RETURN(RET)
-#  define PY_INITMODULE(NAME, MTDS, DOC)	\
-  Py_InitModule3(NAME, MTDS, DOC)
 #else /* PY_MAJOR_VERSION >= 3 */
 #  define PYOBJECT_HEAD_INIT(TYPE, SZ)	PyVarObject_HEAD_INIT(TYPE, SZ)
-#  define INIT_V4L2_CAPTURE(X)		PyInit_v4l2capture(X)
+#  define INIT_V4L2_CAPTURE(X)		PyInit_pyv4l2(X)
 #  define PYSTRING_FROM_STRING(NAME)	PyBytes_FromString(NAME)
 #  define PYSTRING_FROM_STR_SZ(V, LEN)	PyBytes_FromStringAndSize(V, LEN)
 #  define PYMODINIT_FUNC_RETURN(RET)	(RET)
-#  define PY_INITMODULE(NAME, MTDS, DOC)	\
-  initmodule(NAME, MTDS, DOC)
 #endif
 
 #ifndef V4L2_CID_AUTO_WHITE_BALANCE
@@ -932,7 +928,7 @@ static PyMethodDef video_device_methods[] = {
 
 static PyTypeObject video_device_type = {
 	PYOBJECT_HEAD_INIT(NULL, 0)
-	.tp_name = "video_device",
+	.tp_name = "V4L2VideoDevice",
 	.tp_basicsize = sizeof(video_device),
 	.tp_dealloc = (destructor)video_device_dealloc,
 	.tp_flags = Py_TPFLAGS_DEFAULT,
@@ -944,7 +940,7 @@ static PyTypeObject video_device_type = {
 };
 
 static PyMethodDef module_methods[] = {
-	{NULL}
+	{NULL, NULL, 0, NULL}
 };
 
 
@@ -957,14 +953,14 @@ PyMODINIT_FUNC INIT_V4L2_CAPTURE(void)
 	if (PyType_Ready(&video_device_type) < 0)
 		return PYMODINIT_FUNC_RETURN(NULL);
 
-	module = PY_INITMODULE("v4l2capture", module_methods,
-			       "Capture video with video4linux2.");
+	module = Py_InitModule3("pyv4l2", module_methods,
+				"Video with video4linux2.");
 
 	if (!module)
 		return PYMODINIT_FUNC_RETURN(NULL);
 
 	Py_INCREF(&video_device_type);
-	PyModule_AddObject(module, "VideoDevice",
+	PyModule_AddObject(module, "V4L2VideoDevice",
 			   (PyObject *)&video_device_type);
 
 	return PYMODINIT_FUNC_RETURN(module);

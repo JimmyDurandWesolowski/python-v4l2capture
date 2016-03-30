@@ -24,19 +24,19 @@ from distutils.core import Extension, setup
 from os import path, getenv
 
 setup(
-    name = "v4l2capture",
+    name = "pyv4l2",
     version = "1.0",
     author = "Jimmy Durand Wesolowski",
     author_email = "jwesolowski@de.adit-jv.com",
     url = "https://github.com/JimmyDurandWesolowski/python-v4l2capture",
-    description = "Capture video with video4linux2",
-    long_description = "python-v4l2capture is a slim and easy to use Python "
-    "extension for capturing video with video4linux2.",
+    description = "Python extension for video4linux2",
+    long_description = "python-v4l2 is a slim and easy to use Python "
+    "extension for video with video4linux2.",
     license = "LGPLv2.1",
     classifiers = [
         "License :: LGPLv2.1",
         "Programming Language :: C"],
     ext_modules = [
-        Extension("v4l2capture", [path.join("src", "v4l2capture.c")],
+        Extension("pyv4l2", [path.join("src", "v4l2_wrapper.c")],
         libraries=["v4l2"], extra_compile_args=['-DUSE_LIBV4L', ],
         )])
