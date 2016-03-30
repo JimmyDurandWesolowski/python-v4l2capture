@@ -91,6 +91,8 @@
 
 #define CLAMP(c) ((c) <= 0 ? 0 : (c) >= 65025 ? 255 : (c) >> 8)
 
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))
+
 #define PYDICT_SETITEM_SEC2STR(ELT, NAME, VALUE)			\
 	PyDict_SetItemString(ELT, NAME, PyFloat_FromDouble(fract2sec(VALUE)))
 #define PYDICT_SETITEM_FPS2STR(ELT, NAME, VALUE)			\
@@ -169,7 +171,7 @@ static int open_check_err(video_device *videodev)
 		PyErr_SetString(PyExc_ValueError,
 				"I/O operation on closed file");
 
-	return videodev->fd;
+	return !videodev->fd;
 }
 
 static int my_ioctl(int fd, int request, void *arg)
@@ -205,8 +207,7 @@ static void video_device_dealloc(video_device *videodev)
 		v4l2_close(videodev->fd);
 	}
 
-	/* FIXME */
-	Py_TYPE(videodev)->tp_free((PyObject *)videodev);
+	Py_TYPE(videodev)->tp_free(videodev);
 }
 
 static int video_device_init(video_device *videodev,
@@ -219,10 +220,9 @@ static int video_device_init(video_device *videodev,
 		return -1;
 
 	fd = v4l2_open(device_path, O_RDWR | O_NONBLOCK);
-
 	if (fd < 0) {
 		PyErr_SetFromErrnoWithFilename(PyExc_IOError,
-					       (char *)device_path);
+					       device_path);
 		return -1;
 	}
 
@@ -256,9 +256,9 @@ static PyObject *video_device_fileno(video_device *videodev)
 
 static PyObject *video_device_get_info(video_device *videodev)
 {
+	int idx = 0;
 	PyObject *set = Py_None;
 	PyObject *elt = Py_None;
-	struct capability *capability = NULL;
 	struct v4l2_capability caps;
 
 	if (0 != open_check_err(videodev))
@@ -270,11 +270,9 @@ static PyObject *video_device_get_info(video_device *videodev)
 	if (0 == (set = PySet_New(NULL)))
 		Py_RETURN_NONE;
 
-	capability = capabilities;
-
-	while (capability < capabilities + sizeof(capabilities)) {
-		if (caps.capabilities & capability->id) {
-			elt = PYSTRING_FROM_STRING(capability->name);
+	while (idx < ARRAY_SIZE(capabilities)) {
+		if (caps.capabilities & capabilities[idx].id) {
+			elt = PYSTRING_FROM_STRING(capabilities[idx].name);
 
 			if (!elt) {
 				Py_DECREF(set);
@@ -284,7 +282,7 @@ static PyObject *video_device_get_info(video_device *videodev)
 			PySet_Add(set, elt);
 		}
 
-		capability++;
+		idx++;
 	}
 
 	return Py_BuildValue("sssO", caps.driver, caps.card, caps.bus_info,
@@ -938,13 +936,15 @@ static PyMethodDef video_device_methods[] = {
 
 static PyTypeObject video_device_type = {
 	PYOBJECT_HEAD_INIT(NULL, 0)
-	"v4l2capture.video_device", sizeof(video_device), 0,
-	(destructor) video_device_dealloc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, Py_TPFLAGS_DEFAULT, "video_device(path)\n\nOpens the video device at "
+	.tp_name = "video_device",
+	.tp_basicsize = sizeof(video_device),
+	.tp_dealloc = (destructor)video_device_dealloc,
+	.tp_flags = Py_TPFLAGS_DEFAULT,
+	.tp_doc = "video_device(path)\n\nOpens the video device at "
 	"the given path and returns an object that can capture images. The "
-	"constructor and all methods except close may raise IOError.", 0, 0, 0,
-	0, 0, 0, video_device_methods, 0, 0, 0, 0, 0, 0, 0,
-	(initproc) video_device_init
+	"constructor and all methods except close may raise IOError.",
+	.tp_methods = video_device_methods,
+	.tp_init = (initproc)video_device_init
 };
 
 static PyMethodDef module_methods[] = {
@@ -968,8 +968,8 @@ PyMODINIT_FUNC INIT_V4L2_CAPTURE(void)
 		return PYMODINIT_FUNC_RETURN(NULL);
 
 	Py_INCREF(&video_device_type);
-	PyModule_AddObject(module, "video_device",
-			   (PyObject *) & video_device_type);
+	PyModule_AddObject(module, "VideoDevice",
+			   (PyObject *)&video_device_type);
 
 	return PYMODINIT_FUNC_RETURN(module);
 }
