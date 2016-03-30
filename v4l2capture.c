@@ -1,13 +1,24 @@
-/* python-v4l2capture */
-/* Python extension to capture video with video4linux2 */
+/**
+ * @file v4l2capture.c
+ * \brief Python extension to capture video with video4linux2
+ *
+ * 2009, 2010, 2011 Fredrik Portstrom
+ * 2016 Jimmy Durand Wesolowski
+ *
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU Lesser General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
 
-/* 2009, 2010, 2011 Fredrik Portstrom */
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU Lesser General Public License for more details.
 
-/* I, the copyright holder of this file, hereby release it into the */
-/* public domain. This applies worldwide. In case this is not legally */
-/* possible: I grant anyone the right to use this work for any */
-/* purpose, without any conditions, unless such conditions are */
-/* required by law. */
+ * You should have received a copy of the GNU Lesser General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
 
 #include <Python.h>
 #include <fcntl.h>
