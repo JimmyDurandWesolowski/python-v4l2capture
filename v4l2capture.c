@@ -29,26 +29,6 @@
 #  define Py_TYPE(ob) (((PyObject*)(ob))->ob_type)
 #endif
 
-#if PY_MAJOR_VERSION >= 3
-static PyObject *initmodule(char *m_name, PyModuleDef_Slot* m_methods,
-				    char *m_doc)
-{
-	static struct PyModuleDef moduledef = {
-		PyModuleDef_HEAD_INIT,
-		m_name,
-		m_doc,
-		-1,
-		m_methods,
-		NULL,
-		NULL,
-		NULL,
-		NULL
-	};
-
-	return PyModule_Create(&moduledef);
-}
-#endif
-
 #if PY_MAJOR_VERSION < 3
 #  define PyLong_FromLong PyInt_FromLong
 
@@ -69,13 +49,53 @@ static PyObject *initmodule(char *m_name, PyModuleDef_Slot* m_methods,
   initmodule(NAME, MTDS, DOC)
 #endif
 
-#define ASSERT_OPEN if(self->fd < 0) {					\
-		PyErr_SetString(PyExc_ValueError,			\
-					"I/O operation on closed file"); \
-		return NULL;						\
-	}
+#ifndef V4L2_CID_AUTO_WHITE_BALANCE
+#  define V4L2_CID_AUTO_WHITE_BALANCE		-1
+#endif /* !V4L2_CID_AUTO_WHITE_BALANCE */
 
-#define CLEAR(x) memset(&(x), 0, sizeof(x))
+#ifndef V4L2_CID_WHITE_BALANCE_TEMPERATURE
+#  define V4L2_CID_WHITE_BALANCE_TEMPERATURE	-1
+#endif /* !V4L2_CID_WHITE_BALANCE_TEMPERATURE */
+
+#ifndef V4L2_CID_EXPOSURE_ABSOLUTE
+#  define V4L2_CID_EXPOSURE_ABSOLUTE		-1
+#endif /* !V4L2_CID_EXPOSURE_ABSOLUTE */
+
+#ifndef V4L2_CID_EXPOSURE_AUTO
+#  define V4L2_CID_EXPOSURE_AUTO		-1
+#endif /* !V4L2_CID_EXPOSURE_AUTO */
+
+#ifndef V4L2_CID_FOCUS_AUTO
+#  define V4L2_CID_FOCUS_AUTO			-1
+#endif /* !V4L2_CID_FOCUS_AUTO */
+
+#define IS_ARRAY(arg)			__builtin_choose_expr(		\
+		__builtin_types_compatible_p(typeof(arg[0]) [],		\
+					     typeof(arg)), 1, 0)
+#define CLEAR(x)							\
+	do {								\
+		assert(IS_ARRAY(&(x)));					\
+		memset(&(x), 0, sizeof(x));				\
+	} while (0)
+
+#define CLAMP(c) ((c) <= 0 ? 0 : (c) >= 65025 ? 255 : (c) >> 8)
+
+#define PYDICT_SETITEM_SEC2STR(ELT, NAME, VALUE)			\
+	PyDict_SetItemString(ELT, NAME, PyFloat_FromDouble(fract2sec(VALUE)))
+#define PYDICT_SETITEM_FPS2STR(ELT, NAME, VALUE)			\
+	PyDict_SetItemString(ELT, NAME, PyFloat_FromDouble(fract2fps(VALUE)))
+
+#define DECLARE_METHODS(NAME, PARAM)					\
+	static PyObject *video_device_set_ ## NAME(video_device *videodev, \
+						   PyObject *args)	\
+	{								\
+		return video_device_set_helper(PARAM, videodev, args);	\
+	}								\
+									\
+	static PyObject *video_device_get_ ## NAME(video_device *videodev) \
+	{								\
+		return video_device_get_helper(PARAM, videodev);	\
+	}
 
 struct buffer {
 	void *start;
@@ -86,7 +106,7 @@ typedef struct {
 	PyObject_HEAD int fd;
 	struct buffer *buffers;
 	int buffer_count;
-} Video_device;
+} video_device;
 
 struct capability {
 	int id;
@@ -112,12 +132,40 @@ static struct capability capabilities[] = {
 	{V4L2_CAP_VIDEO_OVERLAY, "video_overlay"}
 };
 
-static int my_ioctl(
-	int fd,
-	int request,
-	void *arg) {
-	// Retry ioctl until it returns without being interrupted.
+#if PY_MAJOR_VERSION >= 3
+static PyObject *initmodule(char *m_name, PyModuleDef_Slot *m_methods,
+			    char *m_doc)
+{
+	static struct PyModuleDef moduledef = {
+		PyModuleDef_HEAD_INIT,
+		m_name,
+		m_doc,
+		-1,
+		m_methods,
+		NULL,
+		NULL,
+		NULL,
+		NULL
+	};
+
+	return PyModule_Create(&moduledef);
+}
+#endif
+
+static int open_check_err(video_device *videodev)
+{
+	if (0 > videodev->fd)
+		PyErr_SetString(PyExc_ValueError,
+				"I/O operation on closed file");
+
+	return videodev->fd;
+}
+
+static int my_ioctl(int fd, int request, void *arg)
+{
 	int result = -1;
+
+	// Retry ioctl until it returns without being interrupted.
 	while (result < 0) {
 		result = v4l2_ioctl(fd, request, arg);
 		if (result < 0 && errno != EINTR) {
@@ -128,115 +176,119 @@ static int my_ioctl(
 	return 0;
 }
 
-static void Video_device_unmap(
-	Video_device * self) {
+static void video_device_unmap(video_device *videodev)
+{
 	int i;
 
-	for (i = 0; i < self->buffer_count; i++) {
-		v4l2_munmap(self->buffers[i].start, self->buffers[i].length);
+	for (i = 0; i < videodev->buffer_count; i++)
+		v4l2_munmap(videodev->buffers[i].start,
+			    videodev->buffers[i].length);
+}
+
+static void video_device_dealloc(video_device *videodev)
+{
+	if (0 <= videodev->fd) {
+		if (videodev->buffers)
+			video_device_unmap(videodev);
+
+		v4l2_close(videodev->fd);
 	}
+
+	/* FIXME */
+	Py_TYPE(videodev)->tp_free((PyObject *)videodev);
 }
 
-static void Video_device_dealloc(
-	Video_device * self) {
-	if (self->fd >= 0) {
-		if (self->buffers) {
-			Video_device_unmap(self);
-		}
+static int video_device_init(video_device *videodev,
+			     PyObject *args, PyObject *kwargs)
+{
+	int fd = -1;
+	const char *device_path = NULL;
 
-		v4l2_close(self->fd);
+	if (!PyArg_ParseTuple(args, "s", &device_path))
+		return -1;
+
+	fd = v4l2_open(device_path, O_RDWR | O_NONBLOCK);
+
+	if (fd < 0) {
+		PyErr_SetFromErrnoWithFilename(PyExc_IOError,
+					       (char *)device_path);
+		return -1;
 	}
 
-	Py_TYPE(self)->tp_free((PyObject *) self);
+	videodev->fd = fd;
+	videodev->buffers = NULL;
+
+	return 0;
 }
 
-static int Video_device_init(
-	Video_device * self,
-	PyObject * args,
-	PyObject * kwargs) {
-	const char *device_path;
+static PyObject *video_device_close(video_device *videodev)
+{
+	if (0 > videodev->fd)
+		Py_RETURN_NONE;
 
-if (!PyArg_ParseTuple(args, "s", &device_path)) {
-	return -1;
-}
+	if (videodev->buffers)
+		video_device_unmap(videodev);
 
-int fd = v4l2_open(device_path, O_RDWR | O_NONBLOCK);
-
-if (fd < 0) {
-	PyErr_SetFromErrnoWithFilename(PyExc_IOError, (char *) device_path);
-	return -1;
-}
-
-self->fd = fd;
-self->buffers = NULL;
-return 0;
-}
-
-static PyObject *Video_device_close(
-	Video_device * self) {
-	if (self->fd >= 0) {
-		if (self->buffers) {
-			Video_device_unmap(self);
-		}
-
-		v4l2_close(self->fd);
-		self->fd = -1;
-	}
+	v4l2_close(videodev->fd);
+	videodev->fd = -1;
 
 	Py_RETURN_NONE;
 }
 
-static PyObject *Video_device_fileno(
-	Video_device * self) {
-	ASSERT_OPEN;
-	return PyLong_FromLong(self->fd);
+static PyObject *video_device_fileno(video_device *videodev)
+{
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
+	return PyLong_FromLong(videodev->fd);
 }
 
-static PyObject *Video_device_get_info(
-	Video_device * self) {
-	ASSERT_OPEN;
+static PyObject *video_device_get_info(video_device *videodev)
+{
+	PyObject *set = Py_None;
+	PyObject *elt = Py_None;
+	struct capability *capability = NULL;
 	struct v4l2_capability caps;
 
-	if (my_ioctl(self->fd, VIDIOC_QUERYCAP, &caps)) {
-		return NULL;
-	}
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
 
-	PyObject *set = PySet_New(NULL);
+	if (my_ioctl(videodev->fd, VIDIOC_QUERYCAP, &caps))
+		Py_RETURN_NONE;
 
-	if (!set) {
-		return NULL;
-	}
+	if (0 == (set = PySet_New(NULL)))
+		Py_RETURN_NONE;
 
-	struct capability *capability = capabilities;
+	capability = capabilities;
 
-	while ((void *) capability < (void *) capabilities + sizeof(capabilities)) {
+	while (capability < capabilities + sizeof(capabilities)) {
 		if (caps.capabilities & capability->id) {
-			PyObject *s = PYSTRING_FROM_STRING(capability->name);
+			elt = PYSTRING_FROM_STRING(capability->name);
 
-			if (!s) {
+			if (!elt) {
 				Py_DECREF(set);
-				return NULL;
+				Py_RETURN_NONE;
 			}
 
-			PySet_Add(set, s);
+			PySet_Add(set, elt);
 		}
 
 		capability++;
 	}
 
-	return Py_BuildValue("sssO", caps.driver, caps.card, caps.bus_info, set);
+	return Py_BuildValue("sssO", caps.driver, caps.card, caps.bus_info,
+			     set);
 }
 
-static PyObject *Video_device_set_format(
-	Video_device * self,
-	PyObject * args,
-	PyObject * keywds) {
-	int size_x;
-	int size_y;
+static PyObject *video_device_set_format(video_device *videodev,
+					 PyObject *args, PyObject *keywds)
+{
+	int size_x = 0;
+	int size_y = 0;
 	int yuv420 = 0;
-	int fourcc;
-	const char *fourcc_str;
+	int fourcc = 0;
 	int fourcc_len = 0;
+	const char *fourcc_str;
 	static char *kwlist[] = {
 		"size_x",
 		"size_y",
@@ -244,22 +296,19 @@ static PyObject *Video_device_set_format(
 		"fourcc",
 		NULL
 	};
-
-	if (!PyArg_ParseTupleAndKeywords
-	    (args, keywds, "ii|is#", kwlist, &size_x, &size_y, &yuv420, &fourcc_str,
-	     &fourcc_len)) {
-		return NULL;
-	}
-
 	struct v4l2_format format;
+
+	if (!PyArg_ParseTupleAndKeywords(args, keywds, "ii|is#", kwlist,
+					 &size_x, &size_y, &yuv420,
+					 &fourcc_str, &fourcc_len))
+		Py_RETURN_NONE;
+
 	CLEAR(format);
 	format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	/*
-	  Get the current format
-	*/
-	if (my_ioctl(self->fd, VIDIOC_G_FMT, &format)) {
-		return NULL;
-	}
+
+	/* Get the current format */
+	if (my_ioctl(videodev->fd, VIDIOC_G_FMT, &format))
+		Py_RETURN_NONE;
 
 #ifdef USE_LIBV4L
 	format.fmt.pix.pixelformat =
@@ -271,7 +320,8 @@ static PyObject *Video_device_set_format(
 
 	if (fourcc_len == 4) {
 		fourcc = v4l2_fourcc(fourcc_str[0],
-				     fourcc_str[1], fourcc_str[2], fourcc_str[3]);
+				     fourcc_str[1], fourcc_str[2],
+				     fourcc_str[3]);
 		format.fmt.pix.pixelformat = fourcc;
 		format.fmt.pix.field = V4L2_FIELD_ANY;
 	}
@@ -281,36 +331,39 @@ static PyObject *Video_device_set_format(
 	format.fmt.pix.height = size_y;
 	format.fmt.pix.bytesperline = 0;
 
-	if (my_ioctl(self->fd, VIDIOC_S_FMT, &format)) {
-		return NULL;
+	if (my_ioctl(videodev->fd, VIDIOC_S_FMT, &format)) {
+		Py_RETURN_NONE;
 	}
 
-	return Py_BuildValue("ii", format.fmt.pix.width, format.fmt.pix.height);
+	return Py_BuildValue("ii", format.fmt.pix.width,
+			     format.fmt.pix.height);
 }
 
-static PyObject *Video_device_set_fps(
-	Video_device * self,
-	PyObject * args) {
+static PyObject *video_device_set_fps(video_device *videodev,
+				      PyObject *args)
+{
 	int fps;
-	if (!PyArg_ParseTuple(args, "i", &fps)) {
-		return NULL;
-	}
 	struct v4l2_streamparm setfps;
+
+	if (!PyArg_ParseTuple(args, "i", &fps))
+		Py_RETURN_NONE;
+
 	CLEAR(setfps);
 	setfps.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	setfps.parm.capture.timeperframe.numerator = 1;
 	setfps.parm.capture.timeperframe.denominator = fps;
-	if (my_ioctl(self->fd, VIDIOC_S_PARM, &setfps)) {
-		return NULL;
-	}
+
+	if (my_ioctl(videodev->fd, VIDIOC_S_PARM, &setfps))
+		Py_RETURN_NONE;
+
 	return Py_BuildValue("i", setfps.parm.capture.timeperframe.denominator);
 }
 
-static void get_fourcc_str(
-	char *fourcc_str,
-	int fourcc) {
+static void get_fourcc_str(char *fourcc_str, int fourcc)
+{
 	if (fourcc_str == NULL)
 		return;
+
 	fourcc_str[0] = (char) (fourcc & 0xFF);
 	fourcc_str[1] = (char) ((fourcc >> 8) & 0xFF);
 	fourcc_str[2] = (char) ((fourcc >> 16) & 0xFF);
@@ -318,528 +371,354 @@ static void get_fourcc_str(
 	fourcc_str[4] = 0;
 }
 
-static PyObject *Video_device_get_format(
-	Video_device * self) {
+static PyObject *video_device_get_format(video_device *videodev)
+{
 	struct v4l2_format format;
+	char current_fourcc[5];
+
 	CLEAR(format);
 	format.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-	/*
-	  Get the current format
-	*/
-	if (my_ioctl(self->fd, VIDIOC_G_FMT, &format)) {
-		return NULL;
-	}
+	/* Get the current format */
+	if (my_ioctl(videodev->fd, VIDIOC_G_FMT, &format))
+		Py_RETURN_NONE;
 
-	char current_fourcc[5];
 	get_fourcc_str(current_fourcc, format.fmt.pix.pixelformat);
-	return Py_BuildValue("iis", format.fmt.pix.width, format.fmt.pix.height,
+
+	return Py_BuildValue("iis", format.fmt.pix.width,
+			     format.fmt.pix.height,
 			     current_fourcc);
 }
 
-static PyObject *Video_device_get_fourcc(
-	Video_device * self,
-	PyObject * args) {
+static PyObject *video_device_get_fourcc(video_device *videodev,
+					 PyObject *args)
+{
 	char *fourcc_str;
-	int size;
-	int fourcc;
-	if (!PyArg_ParseTuple(args, "s#", &fourcc_str, &size)) {
-		return NULL;
-	}
+	int size = 0;
+	int fourcc = 0;
 
-	if (size < 4) {
-		return NULL;
-	}
+	if (!PyArg_ParseTuple(args, "s#", &fourcc_str, &size))
+		Py_RETURN_NONE;
 
-	fourcc = v4l2_fourcc(fourcc_str[0],
-			     fourcc_str[1], fourcc_str[2], fourcc_str[3]);
+	if (size < 4)
+		Py_RETURN_NONE;
+
+	fourcc = v4l2_fourcc(fourcc_str[0], fourcc_str[1],
+			     fourcc_str[2], fourcc_str[3]);
 	return Py_BuildValue("i", fourcc);
 }
 
-static PyObject *Video_device_set_auto_white_balance(
-	Video_device * self,
-	PyObject * args) {
-#ifdef V4L2_CID_AUTO_WHITE_BALANCE
-	int autowb;
-	if (!PyArg_ParseTuple(args, "i", &autowb)) {
-		return NULL;
-	}
-
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_AUTO_WHITE_BALANCE;
-	ctrl.value = autowb;
-	if (my_ioctl(self->fd, VIDIOC_S_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_auto_white_balance(
-	Video_device * self) {
-#ifdef V4L2_CID_AUTO_WHITE_BALANCE
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_AUTO_WHITE_BALANCE;
-	if (my_ioctl(self->fd, VIDIOC_G_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_set_white_balance_temperature(
-	Video_device * self,
-	PyObject * args) {
-#ifdef V4L2_CID_WHITE_BALANCE_TEMPERATURE
-	int wb;
-	if (!PyArg_ParseTuple(args, "i", &wb)) {
-		return NULL;
-	}
-
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_WHITE_BALANCE_TEMPERATURE;
-	ctrl.value = wb;
-	if (my_ioctl(self->fd, VIDIOC_S_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_white_balance_temperature(
-	Video_device * self) {
-#ifdef V4L2_CID_WHITE_BALANCE_TEMPERATURE
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_WHITE_BALANCE_TEMPERATURE;
-	if (my_ioctl(self->fd, VIDIOC_G_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_set_exposure_absolute(
-	Video_device * self,
-	PyObject * args) {
-#ifdef V4L2_CID_EXPOSURE_ABSOLUTE
-	int exposure;
-	if (!PyArg_ParseTuple(args, "i", &exposure)) {
-		return NULL;
-	}
-
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_EXPOSURE_ABSOLUTE;
-	ctrl.value = exposure;
-	if (my_ioctl(self->fd, VIDIOC_S_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_exposure_absolute(
-	Video_device * self) {
-#ifdef V4L2_CID_EXPOSURE_ABSOLUTE
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_EXPOSURE_ABSOLUTE;
-	if (my_ioctl(self->fd, VIDIOC_G_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_set_exposure_auto(
-	Video_device * self,
-	PyObject * args) {
-#ifdef V4L2_CID_EXPOSURE_AUTO
-	int autoexposure;
-	if (!PyArg_ParseTuple(args, "i", &autoexposure)) {
-		return NULL;
-	}
-
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_EXPOSURE_AUTO;
-	ctrl.value = autoexposure;
-	if (my_ioctl(self->fd, VIDIOC_S_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_exposure_auto(
-	Video_device * self) {
-#ifdef V4L2_CID_EXPOSURE_AUTO
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_EXPOSURE_AUTO;
-	if (my_ioctl(self->fd, VIDIOC_G_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_framesizes(
-	Video_device * self,
-	PyObject * args) {
+static PyObject *video_device_get_framesizes(video_device *videodev,
+					     PyObject *args)
+{
+	int size = 0;
+	PyObject *ret = Py_None;
+	char *fourcc_str = NULL;
 	struct v4l2_frmsizeenum frmsize;
+
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
 	CLEAR(frmsize);
-	char *fourcc_str;
-	int size;
-	if (!PyArg_ParseTuple(args, "s#", &fourcc_str, &size)) {
-		return NULL;
-	}
-	if (size != 4) {
-		return NULL;
-	}
+	if (!PyArg_ParseTuple(args, "s#", &fourcc_str, &size))
+		Py_RETURN_NONE;
+
+	if (size != 4)
+		Py_RETURN_NONE;
+
 	frmsize.pixel_format = v4l2_fourcc(fourcc_str[0],
 					   fourcc_str[1],
 					   fourcc_str[2], fourcc_str[3]);
 	frmsize.index = 0;
-	PyObject *ret = PyList_New(0);
-	while (!my_ioctl(self->fd, VIDIOC_ENUM_FRAMESIZES, &frmsize)) {
+	ret = PyList_New(0);
+	while (!my_ioctl(videodev->fd, VIDIOC_ENUM_FRAMESIZES, &frmsize)) {
 		PyObject *cap = PyDict_New();
 		switch (frmsize.type) {
 		case V4L2_FRMSIZE_TYPE_DISCRETE:
-		{
 			PyDict_SetItemString(cap, "size_x",
-					     PyLong_FromLong(frmsize.discrete.width));
+					     PyLong_FromLong(frmsize.discrete.
+							     width));
 			PyDict_SetItemString(cap, "size_y",
-					     PyLong_FromLong(frmsize.discrete.height));
-		}
-		break;
+					     PyLong_FromLong(frmsize.discrete.
+							     height));
+
+			break;
 		case V4L2_FRMSIZE_TYPE_STEPWISE:
-		{
 			PyDict_SetItemString(cap, "min_width",
-					     PyLong_FromLong(frmsize.stepwise.min_width));
+					     PyLong_FromLong(frmsize.stepwise.
+							     min_width));
 			PyDict_SetItemString(cap, "min_height",
-					     PyLong_FromLong(frmsize.stepwise.min_height));
+					     PyLong_FromLong(frmsize.stepwise.
+							     min_height));
 			PyDict_SetItemString(cap, "max_width",
-					     PyLong_FromLong(frmsize.stepwise.max_width));
+					     PyLong_FromLong(frmsize.stepwise.
+							     max_width));
 			PyDict_SetItemString(cap, "max_height",
-					     PyLong_FromLong(frmsize.stepwise.max_height));
+					     PyLong_FromLong(frmsize.stepwise.
+							     max_height));
 			PyDict_SetItemString(cap, "step_width",
-					     PyLong_FromLong(frmsize.stepwise.step_width));
+					     PyLong_FromLong(frmsize.stepwise.
+							     step_width));
 			PyDict_SetItemString(cap, "step_height",
-					     PyLong_FromLong(frmsize.stepwise.step_height));
-		}
-		break;
+					     PyLong_FromLong(frmsize.stepwise.
+							     step_height));
+			break;
+		default:
+			PyErr_SetString(PyExc_ValueError,
+					"Unknow format type");
+			break;
+
 		}
 		PyList_Append(ret, cap);
 		frmsize.index++;
 	}
 	PyErr_Clear();
+
 	return ret;
 }
 
-static double fract2sec(
-	const struct v4l2_fract *f) {
-	return (double) f->numerator / f->denominator;
+static double fract2sec(const struct v4l2_fract *f)
+{
+	return (double)f->numerator / f->denominator;
 }
 
-static double fract2fps(
-	const struct v4l2_fract *f) {
-	return (double) f->denominator / f->numerator;
+static double fract2fps(const struct v4l2_fract *f)
+{
+	return (double)f->denominator / f->numerator;
 }
 
-static PyObject *Video_device_get_frameintervals(
-	Video_device * self,
-	PyObject * args) {
+static PyObject *video_device_get_frameintervals(video_device *videodev,
+						 PyObject *args)
+{
+	int size = 0;
+	char *fourcc_str = NULL;
+	PyObject *ret = Py_None;
+	PyObject *cap = Py_None;
 	struct v4l2_frmivalenum frmival;
+
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
 	CLEAR(frmival);
-	char *fourcc_str;
-	int size;
-	if (!PyArg_ParseTuple
-	    (args, "s#ii", &fourcc_str, &size, &frmival.width, &frmival.height)) {
-		return NULL;
-	}
-	if (size != 4) {
-		return NULL;
-	}
+
+	if (!PyArg_ParseTuple(args, "s#ii", &fourcc_str, &size, &frmival.width,
+			      &frmival.height))
+		Py_RETURN_NONE;
+
+	if (size != 4)
+		Py_RETURN_NONE;
+
 	frmival.pixel_format = v4l2_fourcc(fourcc_str[0],
 					   fourcc_str[1],
 					   fourcc_str[2], fourcc_str[3]);
 	frmival.index = 0;
-	PyObject *ret = PyList_New(0);
-	while (!my_ioctl(self->fd, VIDIOC_ENUM_FRAMEINTERVALS, &frmival)) {
-		PyObject *cap = PyDict_New();
+	ret = PyList_New(0);
+
+	while (!my_ioctl(videodev->fd, VIDIOC_ENUM_FRAMEINTERVALS, &frmival)) {
+		cap = PyDict_New();
+
 		switch (frmival.type) {
 		case V4L2_FRMIVAL_TYPE_DISCRETE:
-		{
-			PyDict_SetItemString(cap, "interval",
-					     PyFloat_FromDouble(fract2sec(&frmival.discrete)));
-			PyDict_SetItemString(cap, "fps",
-					     PyFloat_FromDouble(fract2fps(&frmival.discrete)));
-		}
-		break;
+			PYDICT_SETITEM_SEC2STR(cap, "interval",
+					       &frmival.discrete);
+			PYDICT_SETITEM_FPS2STR(cap, "fps", &frmival.discrete);
+			break;
 		case V4L2_FRMIVAL_TYPE_CONTINUOUS:
-		{
-			PyDict_SetItemString(cap, "interval_min",
-					     PyFloat_FromDouble(fract2sec
-								(&frmival.stepwise.min)));
-			PyDict_SetItemString(cap, "interval_max",
-					     PyFloat_FromDouble(fract2sec
-								(&frmival.stepwise.max)));
-			PyDict_SetItemString(cap, "fps_max",
-					     PyFloat_FromDouble(fract2fps
-								(&frmival.stepwise.max)));
-			PyDict_SetItemString(cap, "fps_min",
-					     PyFloat_FromDouble(fract2fps
-								(&frmival.stepwise.min)));
-		}
-		break;
+			PYDICT_SETITEM_SEC2STR(cap, "interval_min",
+					       &frmival.stepwise.min);
+			PYDICT_SETITEM_SEC2STR(cap, "interval_max",
+					       &frmival.stepwise.max);
+			PYDICT_SETITEM_FPS2STR(cap, "fps_max",
+					       &frmival.stepwise.max);
+			PYDICT_SETITEM_FPS2STR(cap, "fps_min",
+					       &frmival.stepwise.min);
+			break;
 		case V4L2_FRMIVAL_TYPE_STEPWISE:
-		{
-			PyDict_SetItemString(cap, "interval_min",
-					     PyFloat_FromDouble(fract2sec
-								(&frmival.stepwise.min)));
-			PyDict_SetItemString(cap, "interval_max",
-					     PyFloat_FromDouble(fract2sec
-								(&frmival.stepwise.max)));
-			PyDict_SetItemString(cap, "interval_step",
-					     PyFloat_FromDouble(fract2sec
-								(&frmival.stepwise.step)));
-			PyDict_SetItemString(cap, "fps_max",
-					     PyFloat_FromDouble(fract2fps
-								(&frmival.stepwise.max)));
-			PyDict_SetItemString(cap, "fps_min",
-					     PyFloat_FromDouble(fract2fps
-								(&frmival.stepwise.min)));
-		}
-		break;
+			PYDICT_SETITEM_SEC2STR(cap, "interval_min",
+					       &frmival.stepwise.min);
+			PYDICT_SETITEM_SEC2STR(cap, "interval_max",
+					       &frmival.stepwise.max);
+			PYDICT_SETITEM_SEC2STR(cap, "interval_step",
+					       &frmival.stepwise.step);
+			PYDICT_SETITEM_FPS2STR(cap, "fps_max",
+					       &frmival.stepwise.max);
+			PYDICT_SETITEM_FPS2STR(cap, "fps_min",
+					       &frmival.stepwise.min);
+			break;
 		}
 		PyList_Append(ret, cap);
 		frmival.index++;
 	}
+
 	PyErr_Clear();
+
 	return ret;
 }
 
-static PyObject *Video_device_set_focus_auto(
-	Video_device * self,
-	PyObject * args) {
-#ifdef V4L2_CID_FOCUS_AUTO
-	int autofocus;
-	if (!PyArg_ParseTuple(args, "i", &autofocus)) {
-		return NULL;
-	}
-
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_FOCUS_AUTO;
-	ctrl.value = autofocus;
-	if (my_ioctl(self->fd, VIDIOC_S_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_get_focus_auto(
-	Video_device * self) {
-#ifdef V4L2_CID_FOCUS_AUTO
-	struct v4l2_control ctrl;
-	CLEAR(ctrl);
-	ctrl.id = V4L2_CID_FOCUS_AUTO;
-	if (my_ioctl(self->fd, VIDIOC_G_CTRL, &ctrl)) {
-		return NULL;
-	}
-	return Py_BuildValue("i", ctrl.value);
-#else
-	return NULL;
-#endif
-}
-
-static PyObject *Video_device_start(
-	Video_device * self) {
-	ASSERT_OPEN;
+static PyObject *video_device_start(video_device *videodev)
+{
 	enum v4l2_buf_type type;
+
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
 	type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-	if (my_ioctl(self->fd, VIDIOC_STREAMON, &type)) {
-		return NULL;
-	}
+	if (my_ioctl(videodev->fd, VIDIOC_STREAMON, &type))
+		Py_RETURN_NONE;
 
 	Py_RETURN_NONE;
 }
 
-static PyObject *Video_device_stop(
-	Video_device * self) {
-	ASSERT_OPEN;
+static PyObject *video_device_stop(video_device *videodev)
+{
 	enum v4l2_buf_type type;
+
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
 	type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 
-	if (my_ioctl(self->fd, VIDIOC_STREAMOFF, &type)) {
-		return NULL;
-	}
+	if (my_ioctl(videodev->fd, VIDIOC_STREAMOFF, &type))
+		Py_RETURN_NONE;
 
 	Py_RETURN_NONE;
 }
 
-static PyObject *Video_device_create_buffers(
-	Video_device * self,
-	PyObject * args) {
-	int buffer_count;
-
-	if (!PyArg_ParseTuple(args, "I", &buffer_count)) {
-		return NULL;
-	}
-
-	ASSERT_OPEN;
-
-	if (self->buffers) {
-		PyErr_SetString(PyExc_ValueError, "Buffers are already created");
-		return NULL;
-	}
-
+static PyObject *video_device_create_buffers(video_device *videodev,
+					     PyObject *args)
+{
+	int buffer_count = 0;
+	int i = 0;
 	struct v4l2_requestbuffers reqbuf;
+	struct v4l2_buffer buffer;
+
+	if (!PyArg_ParseTuple(args, "I", &buffer_count))
+		Py_RETURN_NONE;
+
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
+	if (videodev->buffers) {
+		PyErr_SetString(PyExc_ValueError, "Buffers are already created");
+		Py_RETURN_NONE;
+	}
+
 	reqbuf.count = buffer_count;
 	reqbuf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 	reqbuf.memory = V4L2_MEMORY_MMAP;
 
-	if (my_ioctl(self->fd, VIDIOC_REQBUFS, &reqbuf)) {
-		return NULL;
-	}
+	if (my_ioctl(videodev->fd, VIDIOC_REQBUFS, &reqbuf))
+		Py_RETURN_NONE;
 
 	if (!reqbuf.count) {
 		PyErr_SetString(PyExc_IOError, "Not enough buffer memory");
-		return NULL;
+		Py_RETURN_NONE;
 	}
 
-	self->buffers = malloc(reqbuf.count * sizeof(struct buffer));
+	videodev->buffers = malloc(reqbuf.count * sizeof(struct buffer));
 
-	if (!self->buffers) {
+	if (!videodev->buffers) {
 		PyErr_NoMemory();
-		return NULL;
+		Py_RETURN_NONE;
 	}
-
-	int i;
 
 	for (i = 0; i < reqbuf.count; i++) {
-		struct v4l2_buffer buffer;
 		buffer.index = i;
 		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		buffer.memory = V4L2_MEMORY_MMAP;
 
-		if (my_ioctl(self->fd, VIDIOC_QUERYBUF, &buffer)) {
-			return NULL;
+		if (my_ioctl(videodev->fd, VIDIOC_QUERYBUF, &buffer)) {
+			Py_RETURN_NONE;
 		}
 
-		self->buffers[i].length = buffer.length;
-		self->buffers[i].start = v4l2_mmap(NULL, buffer.length,
-						   PROT_READ | PROT_WRITE, MAP_SHARED,
-						   self->fd, buffer.m.offset);
+		videodev->buffers[i].length = buffer.length;
+		videodev->buffers[i].start = v4l2_mmap(NULL, buffer.length,
+						       PROT_READ | PROT_WRITE,
+						       MAP_SHARED,
+						       videodev->fd,
+						       buffer.m.offset);
 
-		if (self->buffers[i].start == MAP_FAILED) {
+		if (videodev->buffers[i].start == MAP_FAILED) {
 			PyErr_SetFromErrno(PyExc_IOError);
-			return NULL;
+			Py_RETURN_NONE;
 		}
 	}
 
-	self->buffer_count = i;
+	videodev->buffer_count = i;
+
 	Py_RETURN_NONE;
 }
 
-static PyObject *Video_device_queue_all_buffers(
-	Video_device * self) {
-	if (!self->buffers) {
-		ASSERT_OPEN;
-		PyErr_SetString(PyExc_ValueError, "Buffers have not been created");
-		return NULL;
-	}
+static PyObject *video_device_queue_all_buffers(video_device *videodev)
+{
+	int i = 0;
+	int buffer_count = videodev->buffer_count;
+	struct v4l2_buffer buffer;
 
-	int i;
-	int buffer_count = self->buffer_count;
+	if (0 != open_check_err(videodev))
+		Py_RETURN_NONE;
+
+	if (!videodev->buffers) {
+		PyErr_SetString(PyExc_ValueError, "Buffers have not been created");
+		Py_RETURN_NONE;
+	}
 
 	for (i = 0; i < buffer_count; i++) {
-		struct v4l2_buffer buffer;
 		buffer.index = i;
 		buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
 		buffer.memory = V4L2_MEMORY_MMAP;
 
-		if (my_ioctl(self->fd, VIDIOC_QBUF, &buffer)) {
-			return NULL;
-		}
+		if (my_ioctl(videodev->fd, VIDIOC_QBUF, &buffer))
+			Py_RETURN_NONE;
 	}
 
 	Py_RETURN_NONE;
 }
 
-static PyObject *Video_device_read_internal(
-	Video_device * self,
-	int queue) {
-	if (!self->buffers) {
-		ASSERT_OPEN;
-		PyErr_SetString(PyExc_ValueError, "Buffers have not been created");
-		return NULL;
-	}
-
-	struct v4l2_buffer buffer;
-	buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-	buffer.memory = V4L2_MEMORY_MMAP;
-
-	if (my_ioctl(self->fd, VIDIOC_DQBUF, &buffer)) {
-		return NULL;
-	}
-
 #ifdef USE_LIBV4L
-	PyObject *result = PYSTRING_FROM_STR_SZ(self->buffers[buffer.index].
-						start, buffer.bytesused);
+static PyObject *video_device_yuyv2rgb(video_device *videodev,
+				       struct v4l2_buffer *buffer,
+				       int length)
+{
+	return PYSTRING_FROM_STR_SZ(videodev->buffers[buffer->index].start,
+				    buffer->bytesused);
+}
+#else /* !USE_LIBV4L */
+static PyObject *video_device_yuyv2rgb(video_device *videodev,
+				       struct v4l2_buffer *buffer,
+				       int length)
+{
+	int u = 0;
+	int v = 0;
+	int uv = 0;
+	int y = 0;
+	char *rgb = NULL;
+	char *rgb_max = NULL;
+	unsigned char *yuyv = NULL;
+	PyObject *result = Py_None;
 
-	if (!result) {
-		return NULL;
-	}
-#else
+	result = PYSTRING_FROM_STR_SZ(NULL, length);
+
 	// Convert buffer from YUYV to RGB.
 	// For the byte order, see: http://v4l2spec.bytesex.org/spec/r4339.htm
 	// For the color conversion, see: http://v4l2spec.bytesex.org/spec/x2123.htm
-	int length = buffer.bytesused * 6 / 4;
-	PyObject *result = PYSTRING_FROM_STR_SZ(NULL, length);
 
-	if (!result) {
-		return NULL;
-	}
+	if (!result)
+		Py_RETURN_NONE;
 
-	char *rgb = PyString_AS_STRING(result);
-	char *rgb_max = rgb + length;
-	unsigned char *yuyv = self->buffers[buffer.index].start;
+	rgb = PyString_AS_STRING(result);
+	rgb_max = rgb + length;
+	yuyv = videodev->buffers[buffer->index].start;
 
-#  define CLAMP(c) ((c) <= 0 ? 0 : (c) >= 65025 ? 255 : (c) >> 8)
 	while (rgb < rgb_max) {
-		int u = yuyv[1] - 128;
-		int v = yuyv[3] - 128;
-		int uv = 100 * u + 208 * v;
+		u = yuyv[1] - 128;
+		v = yuyv[3] - 128;
+		uv = 100 * u + 208 * v;
 		u *= 516;
 		v *= 409;
 
-		int y = 298 * (yuyv[0] - 16);
+		y = 298 * (yuyv[0] - 16);
 		rgb[0] = CLAMP(y + v);
 		rgb[1] = CLAMP(y - uv);
 		rgb[2] = CLAMP(y + u);
@@ -852,140 +731,209 @@ static PyObject *Video_device_read_internal(
 		rgb += 6;
 		yuyv += 4;
 	}
-#  undef CLAMP
-#endif
+}
+#endif /* USE_LIBV4L */
 
-	if (queue && my_ioctl(self->fd, VIDIOC_QBUF, &buffer)) {
-		return NULL;
+static PyObject *video_device_read_internal(video_device *videodev,
+					    int queue)
+{
+	int length = 0;
+	PyObject *result = Py_None;
+	struct v4l2_buffer buffer;
+
+	if (!videodev->buffers) {
+		PyErr_SetString(PyExc_ValueError, "Buffers have not been created");
+		Py_RETURN_NONE;
 	}
+
+	buffer.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	buffer.memory = V4L2_MEMORY_MMAP;
+
+	if (my_ioctl(videodev->fd, VIDIOC_DQBUF, &buffer)) {
+		Py_RETURN_NONE;
+	}
+
+	length = buffer.bytesused * 6 / 4;
+
+	result = video_device_yuyv2rgb(videodev, &buffer, length);
+
+	if (!result)
+		Py_RETURN_NONE;
+
+	if (queue && my_ioctl(videodev->fd, VIDIOC_QBUF, &buffer))
+		Py_RETURN_NONE;
 
 	return result;
 }
 
-static PyObject *Video_device_read(
-	Video_device * self) {
-	return Video_device_read_internal(self, 0);
+static PyObject *video_device_read(video_device *videodev)
+{
+	return video_device_read_internal(videodev, 0);
 }
 
-static PyObject *Video_device_read_and_queue(
-	Video_device * self) {
-	return Video_device_read_internal(self, 1);
+static PyObject *video_device_read_and_queue(video_device *videodev)
+{
+	return video_device_read_internal(videodev, 1);
 }
 
-static PyMethodDef Video_device_methods[] = {
-	{"close", (PyCFunction) Video_device_close, METH_NOARGS,
+static PyObject *video_device_set_helper(int id,
+					 video_device *videodev,
+					 PyObject *args)
+{
+	int value = 0;
+	struct v4l2_control ctrl;
+
+	CLEAR(ctrl);
+
+	if (0 > id)
+		Py_RETURN_NONE;
+
+	if (!PyArg_ParseTuple(args, "i", &value))
+		Py_RETURN_NONE;
+
+	ctrl.id = id;
+	ctrl.value = value;
+
+	if (my_ioctl(videodev->fd, VIDIOC_S_CTRL, &ctrl))
+		Py_RETURN_NONE;
+
+	return Py_BuildValue("i", ctrl.value);
+}
+
+static PyObject *video_device_get_helper(int id,
+					 video_device *videodev)
+{
+	struct v4l2_control ctrl;
+
+	CLEAR(ctrl);
+	ctrl.id = id;
+
+	if (my_ioctl(videodev->fd, VIDIOC_G_CTRL, &ctrl))
+		Py_RETURN_NONE;
+
+	return Py_BuildValue("i", ctrl.value);
+}
+
+DECLARE_METHODS(auto_wb, V4L2_CID_AUTO_WHITE_BALANCE);
+DECLARE_METHODS(wb_temperature, V4L2_CID_WHITE_BALANCE_TEMPERATURE);
+DECLARE_METHODS(exposure_absolute, V4L2_CID_EXPOSURE_ABSOLUTE);
+DECLARE_METHODS(exposure_auto, V4L2_CID_EXPOSURE_AUTO);
+DECLARE_METHODS(focus_auto, V4L2_CID_FOCUS_AUTO);
+
+static PyMethodDef video_device_methods[] = {
+	{"close", (PyCFunction) video_device_close, METH_NOARGS,
 	 "close()\n\n"
 	 "Close video device. Subsequent calls to other methods will fail."},
-	{"fileno", (PyCFunction) Video_device_fileno, METH_NOARGS,
+	{"fileno", (PyCFunction) video_device_fileno, METH_NOARGS,
 	 "fileno() -> integer \"file descriptor\".\n\n"
 	 "This enables video devices to be passed select.select for waiting "
 	 "until a frame is available for reading."},
-	{"get_info", (PyCFunction) Video_device_get_info, METH_NOARGS,
+	{"get_info", (PyCFunction) video_device_get_info, METH_NOARGS,
 	 "get_info() -> driver, card, bus_info, capabilities\n\n"
 	 "Returns three strings with information about the video device, and one "
 	 "set containing strings identifying the capabilities of the video "
 	 "device."},
-	{"get_fourcc", (PyCFunction) Video_device_get_fourcc, METH_VARARGS,
+	{"get_fourcc", (PyCFunction) video_device_get_fourcc, METH_VARARGS,
 	 "get_fourcc(fourcc_string) -> fourcc_int\n\n"
 	 "Return the fourcc string encoded as int."},
-	{"get_format", (PyCFunction) Video_device_get_format, METH_NOARGS,
+	{"get_format", (PyCFunction) video_device_get_format, METH_NOARGS,
 	 "get_format() -> size_x, size_y, fourcc\n\n"
 	 "Request the current video format."},
-	{"set_format", (PyCFunction) Video_device_set_format,
+	{"set_format", (PyCFunction) video_device_set_format,
 	 METH_VARARGS | METH_KEYWORDS,
 	 "set_format(size_x, size_y, yuv420 = 0, fourcc='MJPEG') -> size_x, size_y\n\n"
 	 "Request the video device to set image size and format. The device may "
 	 "choose another size than requested and will return its choice. The "
 	 "image format will be RGB24 if yuv420 is zero (default) or YUV420 if "
 	 "yuv420 is 1, if fourcc keyword is set that will be the fourcc pixel format used."},
-	{"set_fps", (PyCFunction) Video_device_set_fps, METH_VARARGS,
+	{"set_fps", (PyCFunction) video_device_set_fps, METH_VARARGS,
 	 "set_fps(fps) -> fps \n\n"
 	 "Request the video device to set frame per seconds.The device may "
 	 "choose another frame rate than requested and will return its choice. "},
 	{"set_auto_white_balance",
-	 (PyCFunction) Video_device_set_auto_white_balance, METH_VARARGS,
+	 (PyCFunction) video_device_set_auto_wb, METH_VARARGS,
 	 "set_auto_white_balance(autowb) -> autowb \n\n"
 	 "Request the video device to set auto white balance to value. The device may "
 	 "choose another value than requested and will return its choice. "},
 	{"get_auto_white_balance",
-	 (PyCFunction) Video_device_get_auto_white_balance, METH_NOARGS,
+	 (PyCFunction) video_device_get_auto_wb, METH_NOARGS,
 	 "get_auto_white_balance() -> autowb \n\n"
 	 "Request the video device to get auto white balance value. "},
 	{"set_white_balance_temperature",
-	 (PyCFunction) Video_device_set_white_balance_temperature, METH_VARARGS,
+	 (PyCFunction) video_device_set_wb_temperature, METH_VARARGS,
 	 "set_white_balance_temperature(temp) -> temp \n\n"
 	 "Request the video device to set white balance tempature to value. The device may "
 	 "choose another value than requested and will return its choice. "},
 	{"get_white_balance_temperature",
-	 (PyCFunction) Video_device_get_white_balance_temperature, METH_NOARGS,
+	 (PyCFunction) video_device_get_wb_temperature, METH_NOARGS,
 	 "get_white_balance_temperature() -> temp \n\n"
 	 "Request the video device to get white balance temperature value. "},
-	{"set_exposure_auto", (PyCFunction) Video_device_set_exposure_auto,
+	{"set_exposure_auto", (PyCFunction) video_device_set_exposure_auto,
 	 METH_VARARGS,
 	 "set_exposure_auto(autoexp) -> autoexp \n\n"
 	 "Request the video device to set auto exposure to value. The device may "
 	 "choose another value than requested and will return its choice. "},
-	{"get_exposure_auto", (PyCFunction) Video_device_get_exposure_auto,
+	{"get_exposure_auto", (PyCFunction) video_device_get_exposure_auto,
 	 METH_NOARGS,
 	 "get_exposure_auto() -> autoexp \n\n"
 	 "Request the video device to get auto exposure value. "},
-	{"set_exposure_absolute", (PyCFunction) Video_device_set_exposure_absolute,
+	{"set_exposure_absolute", (PyCFunction) video_device_set_exposure_absolute,
 	 METH_VARARGS,
 	 "set_exposure_absolute(exptime) -> exptime \n\n"
 	 "Request the video device to set exposure time to value. The device may "
 	 "choose another value than requested and will return its choice. "},
-	{"get_exposure_absolute", (PyCFunction) Video_device_get_exposure_absolute,
+	{"get_exposure_absolute", (PyCFunction) video_device_get_exposure_absolute,
 	 METH_NOARGS,
 	 "get_exposure_absolute() -> exptime \n\n"
 	 "Request the video device to get exposure time value. "},
-	{"set_focus_auto", (PyCFunction) Video_device_set_focus_auto, METH_VARARGS,
+	{"set_focus_auto", (PyCFunction) video_device_set_focus_auto, METH_VARARGS,
 	 "set_auto_focus_auto(autofocus) -> autofocus \n\n"
 	 "Request the video device to set auto focuse on or off. The device may "
 	 "choose another value than requested and will return its choice. "},
-	{"get_focus_auto", (PyCFunction) Video_device_get_focus_auto, METH_NOARGS,
+	{"get_focus_auto", (PyCFunction) video_device_get_focus_auto, METH_NOARGS,
 	 "get_focus_auto() -> autofocus \n\n"
 	 "Request the video device to get auto focus value. "},
-	{"get_framesizes", (PyCFunction) Video_device_get_framesizes, METH_VARARGS,
+	{"get_framesizes", (PyCFunction) video_device_get_framesizes, METH_VARARGS,
 	 "get_framesizes() -> framesizes \n\n"
 	 "Request the framesizes suported by the device. "},
-	{"get_frameintervals", (PyCFunction) Video_device_get_frameintervals,
+	{"get_frameintervals", (PyCFunction) video_device_get_frameintervals,
 	 METH_VARARGS,
 	 "get_frameintervals() -> frameintervals \n\n"
 	 "Request the frameintervals suported by the device. "},
-	{"start", (PyCFunction) Video_device_start, METH_NOARGS,
+	{"start", (PyCFunction) video_device_start, METH_NOARGS,
 	 "start()\n\n" "Start video capture."},
-	{"stop", (PyCFunction) Video_device_stop, METH_NOARGS,
+	{"stop", (PyCFunction) video_device_stop, METH_NOARGS,
 	 "stop()\n\n" "Stop video capture."},
-	{"create_buffers", (PyCFunction) Video_device_create_buffers, METH_VARARGS,
+	{"create_buffers", (PyCFunction) video_device_create_buffers, METH_VARARGS,
 	 "create_buffers(count)\n\n"
 	 "Create buffers used for capturing image data. Can only be called once "
 	 "for each video device object."},
-	{"queue_all_buffers", (PyCFunction) Video_device_queue_all_buffers,
+	{"queue_all_buffers", (PyCFunction) video_device_queue_all_buffers,
 	 METH_NOARGS,
 	 "queue_all_buffers()\n\n"
 	 "Let the video device fill all buffers created."},
-	{"read", (PyCFunction) Video_device_read, METH_NOARGS,
+	{"read", (PyCFunction) video_device_read, METH_NOARGS,
 	 "read() -> string\n\n"
 	 "Reads image data from a buffer that has been filled by the video "
 	 "device. The image data is in RGB och YUV420 format as decided by "
 	 "'set_format'. The buffer is removed from the queue. Fails if no buffer "
 	 "is filled. Use select.select to check for filled buffers."},
-	{"read_and_queue", (PyCFunction) Video_device_read_and_queue, METH_NOARGS,
+	{"read_and_queue", (PyCFunction) video_device_read_and_queue, METH_NOARGS,
 	 "read_and_queue()\n\n"
 	 "Same as 'read', but adds the buffer back to the queue so the video "
 	 "device can fill it again."},
 	{NULL}
 };
 
-static PyTypeObject Video_device_type = {
+static PyTypeObject video_device_type = {
 	PYOBJECT_HEAD_INIT(NULL, 0)
-	"v4l2capture.Video_device", sizeof(Video_device), 0,
-	(destructor) Video_device_dealloc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-	0, Py_TPFLAGS_DEFAULT, "Video_device(path)\n\nOpens the video device at "
+	"v4l2capture.video_device", sizeof(video_device), 0,
+	(destructor) video_device_dealloc, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	0, Py_TPFLAGS_DEFAULT, "video_device(path)\n\nOpens the video device at "
 	"the given path and returns an object that can capture images. The "
 	"constructor and all methods except close may raise IOError.", 0, 0, 0,
-	0, 0, 0, Video_device_methods, 0, 0, 0, 0, 0, 0, 0,
-	(initproc) Video_device_init
+	0, 0, 0, video_device_methods, 0, 0, 0, 0, 0, 0, 0,
+	(initproc) video_device_init
 };
 
 static PyMethodDef module_methods[] = {
@@ -997,22 +945,20 @@ PyMODINIT_FUNC INIT_V4L2_CAPTURE(void)
 {
 	PyObject *module;
 
-	Video_device_type.tp_new = PyType_GenericNew;
+	video_device_type.tp_new = PyType_GenericNew;
 
-	if (PyType_Ready(&Video_device_type) < 0) {
+	if (PyType_Ready(&video_device_type) < 0)
 		return PYMODINIT_FUNC_RETURN(NULL);
-	}
 
 	module = PY_INITMODULE("v4l2capture", module_methods,
 			       "Capture video with video4linux2.");
 
-	if (!module) {
+	if (!module)
 		return PYMODINIT_FUNC_RETURN(NULL);
-	}
 
-	Py_INCREF(&Video_device_type);
-	PyModule_AddObject(module, "Video_device",
-			   (PyObject *) & Video_device_type);
+	Py_INCREF(&video_device_type);
+	PyModule_AddObject(module, "video_device",
+			   (PyObject *) & video_device_type);
 
 	return PYMODINIT_FUNC_RETURN(module);
 }
