@@ -117,6 +117,7 @@ struct buffer {
 
 typedef struct {
 	PyObject_HEAD int fd;
+	const char *path;
 	struct buffer *buffers;
 	int buffer_count;
 } video_device;
@@ -198,38 +199,17 @@ static void video_device_unmap(video_device *videodev)
 			    videodev->buffers[i].length);
 }
 
-static void video_device_dealloc(video_device *videodev)
+static PyObject *video_device_open(video_device *videodev)
 {
-	if (0 <= videodev->fd) {
-		if (videodev->buffers)
-			video_device_unmap(videodev);
+	videodev->fd = v4l2_open(videodev->path, O_RDWR | O_NONBLOCK);
 
-		v4l2_close(videodev->fd);
-	}
-
-	Py_TYPE(videodev)->tp_free(videodev);
-}
-
-static int video_device_init(video_device *videodev,
-			     PyObject *args, PyObject *kwargs)
-{
-	int fd = -1;
-	const char *device_path = NULL;
-
-	if (!PyArg_ParseTuple(args, "s", &device_path))
-		return -1;
-
-	fd = v4l2_open(device_path, O_RDWR | O_NONBLOCK);
-	if (fd < 0) {
+	if (videodev->fd < 0) {
 		PyErr_SetFromErrnoWithFilename(PyExc_IOError,
-					       device_path);
-		return -1;
+					       videodev->path);
+		Py_RETURN_NONE;
 	}
 
-	videodev->fd = fd;
-	videodev->buffers = NULL;
-
-	return 0;
+	Py_RETURN_NONE;
 }
 
 static PyObject *video_device_close(video_device *videodev)
@@ -246,12 +226,29 @@ static PyObject *video_device_close(video_device *videodev)
 	Py_RETURN_NONE;
 }
 
-static PyObject *video_device_fileno(video_device *videodev)
+static int video_device_init(video_device *videodev,
+			     PyObject *args, PyObject *kwargs)
 {
-	if (0 != open_check_err(videodev))
-		Py_RETURN_NONE;
+	if (!PyArg_ParseTuple(args, "s", &videodev->path))
+		return -1;
 
-	return PyLong_FromLong(videodev->fd);
+	videodev->fd = -1;
+	videodev->buffers = NULL;
+	videodev->buffer_count = 0;
+
+	return 0;
+}
+
+static void video_device_dealloc(video_device *videodev)
+{
+	if (0 <= videodev->fd) {
+		if (videodev->buffers)
+			video_device_unmap(videodev);
+
+		v4l2_close(videodev->fd);
+	}
+
+	Py_TYPE(videodev)->tp_free(videodev);
 }
 
 static PyObject *video_device_get_info(video_device *videodev)
@@ -830,13 +827,12 @@ DECLARE_METHODS(exposure_auto, V4L2_CID_EXPOSURE_AUTO);
 DECLARE_METHODS(focus_auto, V4L2_CID_FOCUS_AUTO);
 
 static PyMethodDef video_device_methods[] = {
+	{"open", (PyCFunction) video_device_open, METH_NOARGS,
+	 "open()\n\n"
+	 "Open the video device."},
 	{"close", (PyCFunction) video_device_close, METH_NOARGS,
 	 "close()\n\n"
-	 "Close video device. Subsequent calls to other methods will fail."},
-	{"fileno", (PyCFunction) video_device_fileno, METH_NOARGS,
-	 "fileno() -> integer \"file descriptor\".\n\n"
-	 "This enables video devices to be passed select.select for waiting "
-	 "until a frame is available for reading."},
+	 "Close the video device."},
 	{"get_info", (PyCFunction) video_device_get_info, METH_NOARGS,
 	 "get_info() -> driver, card, bus_info, capabilities\n\n"
 	 "Returns three strings with information about the video device, and one "
