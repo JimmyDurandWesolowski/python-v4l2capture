@@ -22,6 +22,19 @@
 #
 
 from pyv4l2 import V4L2VideoDevice
+from collections import namedtuple
+
+
+VideoFormat = namedtuple('VideoFormat', 'type fourcc desc')
+
+class VideoFrame:
+    def __init__(self, data):
+        print(data)
+        assert(data is list)
+        if 1 == len(data):
+            print("Discrete")
+        else:
+            print("Stepwise")
 
 
 class VideoDevice:
@@ -30,23 +43,34 @@ class VideoDevice:
     driver = None
     card = None
     caps = None
+    formats = None
+    framesize = None
 
     def __init__(self, path):
         self.path = path
         self.video_dev = V4L2VideoDevice(path)
         self.video_dev.open()
         self.driver, self.card, _, self.caps = self.video_dev.get_info()
-        self.formats = self.video_dev.get_formats()
-        self.framesizes = self.video_dev.get_framesizes()
+        self.formats = [VideoFormat(**fmt) for fmt in \
+                        self.video_dev.get_formats()]
+        self.framesize = {}
+        for fmt in self.formats:
+            fourcc = fmt.fourcc
+            data = self.video_dev.get_framesizes(fourcc)
+            print data
+            self.framesize[fourcc] = data
 
     def is_capture_device(self):
         return 'video_capture' in self.caps
+
+    def is_supported_format(self, fmt):
+        return fmt in self.formats
 
     def __str__(self):
         desc = "%s %s\n" % (self.path, self.driver)
         desc += "  caps: " + ", ".join(self.caps) + "\n"
         for fmt in self.formats:
-            desc += "  format: %s, %s (%s)\n" % (fmt["type"], fmt["format"],
-                                                 fmt["desc"])
-        # Remove trailing newline
-        return desc[:-1]
+            desc += "  format: %s, %s (%s)\n" % (fmt.type, fmt.fourcc,
+                                                 fmt.desc)
+        desc += str(self.framesize)
+        return desc

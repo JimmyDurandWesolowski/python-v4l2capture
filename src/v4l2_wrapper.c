@@ -406,8 +406,8 @@ static PyObject *video_capdevice_get_formats(video_device *videodev)
 			       format.pixelformat);
 		dict = Py_BuildValue("{s:s, s:s, s:s}",
 				     "type", buf_type_g[format.type],
-				     "desc", format.description,
-				     "format", current_fourcc);
+				     "fourcc", current_fourcc,
+				     "desc", format.description);
 		if (!dict) {
 			Py_DECREF(list);
 			Py_RETURN_NONE;
@@ -439,34 +439,35 @@ static PyObject *video_capdevice_get_format(video_device *videodev)
 			     current_fourcc);
 }
 
-static int get_fourcc(video_device *video_device,
-		      PyObject *args)
+static PyObject *get_fourcc(video_device *video_device,
+			    PyObject *args,
+			    int *fourcc)
 {
 	int size = 0;
 	char *fourcc_str;
 
 	if (!PyArg_ParseTuple(args, "s#", &fourcc_str, &size))
-		return -1;
+		return NULL;
 
 	if (size < 4) {
-		PyErr_SetString(PyExc_IndexError,
-				"Argument tuple size too small");
-		return -1;
+		return PyErr_NewException("TupleSize", NULL, NULL);
 	}
 
-	return v4l2_fourcc(fourcc_str[0], fourcc_str[1], fourcc_str[2],
-			   fourcc_str[3]);
+	*fourcc = v4l2_fourcc(fourcc_str[0], fourcc_str[1], fourcc_str[2],
+			      fourcc_str[3]);
+	return Py_None;
 }
 
 static PyObject *video_device_get_fourcc(video_device *videodev,
 					 PyObject *args)
 {
 	int fourcc = 0;
+	PyObject *err = Py_None;
 
-	if (0 > (fourcc = get_fourcc(videodev, args)))
-		return PyErr_Occurred();
+	if (Py_None != (err = get_fourcc(videodev, args, &fourcc)))
+		return err;
 
-	return Py_BuildValue("i", get_fourcc(videodev, args));
+	return Py_BuildValue("i", fourcc);
 }
 
 static PyObject *video_device_get_framesizes(video_device *videodev,
@@ -474,6 +475,7 @@ static PyObject *video_device_get_framesizes(video_device *videodev,
 {
 	int fourcc = 0;
 	PyObject *ret = Py_None;
+	PyObject *cap = Py_None;
 	struct v4l2_frmsizeenum frmsize;
 
 	if (Py_None != (ret = open_check_err(videodev)))
@@ -481,14 +483,18 @@ static PyObject *video_device_get_framesizes(video_device *videodev,
 
 	CLEAR(frmsize);
 
-	if (0 > (fourcc = get_fourcc(videodev, args)))
-		return PyErr_Occurred();
+	if (Py_None != (ret = get_fourcc(videodev, args, &fourcc)))
+		return ret;
 
 	frmsize.pixel_format = fourcc;
 	frmsize.index = 0;
-	ret = PyList_New(0);
+
+	if (0 == (ret = PyList_New(0)))
+		return PyErr_SetFromErrno(PyExc_IOError);
+
 	while (!my_ioctl(videodev->fd, VIDIOC_ENUM_FRAMESIZES, &frmsize)) {
-		PyObject *cap = PyDict_New();
+		printf("Format %i with fourcc: 0x%x (%d)\n", frmsize.index, fourcc, frmsize.type);
+		cap = PyDict_New();
 		switch (frmsize.type) {
 		case V4L2_FRMSIZE_TYPE_DISCRETE:
 			PyDict_SetItemString(cap, "size_x",
@@ -497,9 +503,16 @@ static PyObject *video_device_get_framesizes(video_device *videodev,
 			PyDict_SetItemString(cap, "size_y",
 					     PyLong_FromLong(frmsize.discrete.
 							     height));
-
 			break;
 		case V4L2_FRMSIZE_TYPE_STEPWISE:
+			PyDict_SetItemString(cap, "step_width",
+					     PyLong_FromLong(frmsize.stepwise.
+							     step_width));
+			PyDict_SetItemString(cap, "step_height",
+					     PyLong_FromLong(frmsize.stepwise.
+							     step_height));
+			/* Fallthrough */
+		case V4L2_FRMSIZE_TYPE_CONTINUOUS:
 			PyDict_SetItemString(cap, "min_width",
 					     PyLong_FromLong(frmsize.stepwise.
 							     min_width));
@@ -512,12 +525,6 @@ static PyObject *video_device_get_framesizes(video_device *videodev,
 			PyDict_SetItemString(cap, "max_height",
 					     PyLong_FromLong(frmsize.stepwise.
 							     max_height));
-			PyDict_SetItemString(cap, "step_width",
-					     PyLong_FromLong(frmsize.stepwise.
-							     step_width));
-			PyDict_SetItemString(cap, "step_height",
-					     PyLong_FromLong(frmsize.stepwise.
-							     step_height));
 			break;
 		default:
 			PyErr_SetString(PyExc_ValueError,
@@ -902,8 +909,8 @@ static PyMethodDef video_device_methods[] = {
 	{
 		"get_formats", (PyCFunction)video_capdevice_get_formats,
 		METH_NOARGS,
-		"get_formats() -> list of dict{'type', 'desc', "
-		"'pixfmt'} for each available format.\n\n"
+		"get_formats() -> list of dict{'type', 'fourcc', "
+		"'desc'} for each available format.\n\n"
 		"Request the available video format."
 	},
 	{
