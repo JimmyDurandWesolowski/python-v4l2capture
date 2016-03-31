@@ -877,107 +877,189 @@ DECLARE_METHODS(exposure_auto, V4L2_CID_EXPOSURE_AUTO);
 DECLARE_METHODS(focus_auto, V4L2_CID_FOCUS_AUTO);
 
 static PyMethodDef video_device_methods[] = {
-	{"open", (PyCFunction) video_device_open, METH_NOARGS,
-	 "open()\n\n"
-	 "Open the video device."},
-	{"close", (PyCFunction) video_device_close, METH_NOARGS,
-	 "close()\n\n"
-	 "Close the video device."},
-	{"get_info", (PyCFunction) video_device_get_info, METH_NOARGS,
-	 "get_info() -> driver, card, bus_info, capabilities\n\n"
-	 "Returns three strings with information about the video device, and one "
-	 "set containing strings identifying the capabilities of the video "
-	 "device."},
-	{"get_fourcc", (PyCFunction) video_device_get_fourcc, METH_VARARGS,
-	 "get_fourcc(fourcc_string) -> fourcc_int\n\n"
-	 "Return the fourcc string encoded as int."},
-	{"get_format", (PyCFunction) video_device_get_format, METH_NOARGS,
-	 "get_format() -> size_x, size_y, fourcc\n\n"
-	 "Request the current video format."},
-	{"set_format", (PyCFunction) video_device_set_format,
-	 METH_VARARGS | METH_KEYWORDS,
-	 "set_format(size_x, size_y, yuv420 = 0, fourcc='MJPEG') -> size_x, size_y\n\n"
-	 "Request the video device to set image size and format. The device may "
-	 "choose another size than requested and will return its choice. The "
-	 "image format will be RGB24 if yuv420 is zero (default) or YUV420 if "
-	 "yuv420 is 1, if fourcc keyword is set that will be the fourcc pixel format used."},
-	{"set_fps", (PyCFunction) video_device_set_fps, METH_VARARGS,
-	 "set_fps(fps) -> fps \n\n"
-	 "Request the video device to set frame per seconds.The device may "
-	 "choose another frame rate than requested and will return its choice. "},
-	{"set_auto_white_balance",
-	 (PyCFunction) video_device_set_auto_wb, METH_VARARGS,
-	 "set_auto_white_balance(autowb) -> autowb \n\n"
-	 "Request the video device to set auto white balance to value. The device may "
-	 "choose another value than requested and will return its choice. "},
-	{"get_auto_white_balance",
-	 (PyCFunction) video_device_get_auto_wb, METH_NOARGS,
-	 "get_auto_white_balance() -> autowb \n\n"
-	 "Request the video device to get auto white balance value. "},
-	{"set_white_balance_temperature",
-	 (PyCFunction) video_device_set_wb_temperature, METH_VARARGS,
-	 "set_white_balance_temperature(temp) -> temp \n\n"
-	 "Request the video device to set white balance tempature to value. The device may "
-	 "choose another value than requested and will return its choice. "},
-	{"get_white_balance_temperature",
-	 (PyCFunction) video_device_get_wb_temperature, METH_NOARGS,
-	 "get_white_balance_temperature() -> temp \n\n"
-	 "Request the video device to get white balance temperature value. "},
-	{"set_exposure_auto", (PyCFunction) video_device_set_exposure_auto,
-	 METH_VARARGS,
-	 "set_exposure_auto(autoexp) -> autoexp \n\n"
-	 "Request the video device to set auto exposure to value. The device may "
-	 "choose another value than requested and will return its choice. "},
-	{"get_exposure_auto", (PyCFunction) video_device_get_exposure_auto,
-	 METH_NOARGS,
-	 "get_exposure_auto() -> autoexp \n\n"
-	 "Request the video device to get auto exposure value. "},
-	{"set_exposure_absolute", (PyCFunction) video_device_set_exposure_absolute,
-	 METH_VARARGS,
-	 "set_exposure_absolute(exptime) -> exptime \n\n"
-	 "Request the video device to set exposure time to value. The device may "
-	 "choose another value than requested and will return its choice. "},
-	{"get_exposure_absolute", (PyCFunction) video_device_get_exposure_absolute,
-	 METH_NOARGS,
-	 "get_exposure_absolute() -> exptime \n\n"
-	 "Request the video device to get exposure time value. "},
-	{"set_focus_auto", (PyCFunction) video_device_set_focus_auto, METH_VARARGS,
-	 "set_auto_focus_auto(autofocus) -> autofocus \n\n"
-	 "Request the video device to set auto focuse on or off. The device may "
-	 "choose another value than requested and will return its choice. "},
-	{"get_focus_auto", (PyCFunction) video_device_get_focus_auto, METH_NOARGS,
-	 "get_focus_auto() -> autofocus \n\n"
-	 "Request the video device to get auto focus value. "},
-	{"get_framesizes", (PyCFunction) video_device_get_framesizes, METH_VARARGS,
-	 "get_framesizes() -> framesizes \n\n"
-	 "Request the framesizes suported by the device. "},
-	{"get_frameintervals", (PyCFunction) video_device_get_frameintervals,
-	 METH_VARARGS,
-	 "get_frameintervals() -> frameintervals \n\n"
-	 "Request the frameintervals suported by the device. "},
-	{"start", (PyCFunction) video_device_start, METH_NOARGS,
-	 "start()\n\n" "Start video capture."},
-	{"stop", (PyCFunction) video_device_stop, METH_NOARGS,
-	 "stop()\n\n" "Stop video capture."},
-	{"create_buffers", (PyCFunction) video_device_create_buffers, METH_VARARGS,
-	 "create_buffers(count)\n\n"
-	 "Create buffers used for capturing image data. Can only be called once "
-	 "for each video device object."},
-	{"queue_all_buffers", (PyCFunction) video_device_queue_all_buffers,
-	 METH_NOARGS,
-	 "queue_all_buffers()\n\n"
-	 "Let the video device fill all buffers created."},
-	{"read", (PyCFunction) video_device_read, METH_NOARGS,
-	 "read() -> string\n\n"
-	 "Reads image data from a buffer that has been filled by the video "
-	 "device. The image data is in RGB och YUV420 format as decided by "
-	 "'set_format'. The buffer is removed from the queue. Fails if no buffer "
-	 "is filled. Use select.select to check for filled buffers."},
-	{"read_and_queue", (PyCFunction) video_device_read_and_queue, METH_NOARGS,
-	 "read_and_queue()\n\n"
-	 "Same as 'read', but adds the buffer back to the queue so the video "
-	 "device can fill it again."},
-	{NULL}
+	{
+		"open", (PyCFunction)video_device_open, METH_NOARGS,
+		"open()\n\n"
+		"Open the video device."
+	},
+	{
+		"close", (PyCFunction)video_device_close, METH_NOARGS,
+		"close()\n\n"
+		"Close the video device."},
+	{
+		"get_info", (PyCFunction)video_device_get_info, METH_NOARGS,
+		"get_info() -> driver, card, bus_info, capabilities\n\n"
+		"Returns three strings with information about the video "
+		"device, and one set containing strings identifying the "
+		"capabilities of the video device."
+	},
+	{
+		"get_fourcc", (PyCFunction)video_device_get_fourcc,
+		METH_VARARGS,
+		"get_fourcc(fourcc_string) -> fourcc_int\n\n"
+		"Return the fourcc string encoded as int."
+	},
+	{
+		"get_formats", (PyCFunction)video_capdevice_get_formats,
+		METH_NOARGS,
+		"get_formats() -> list of dict{'type', 'desc', "
+		"'pixfmt'} for each available format.\n\n"
+		"Request the available video format."
+	},
+	{
+		"get_format", (PyCFunction)video_capdevice_get_format,
+		METH_NOARGS,
+		"get_format() -> size_x, size_y, fourcc\n\n"
+		"Request the current video format."
+	},
+	{
+		"set_format", (PyCFunction)video_capdevice_set_format,
+		METH_VARARGS | METH_KEYWORDS,
+		"set_format(size_x, size_y, yuv420 = 0, fourcc='MJPEG') -> "
+		"size_x, size_y\n\n"
+		"Request the video device to set image size and format. "
+		"The device may choose another size than requested and will "
+		"return its choice. "
+		"The image format will be RGB24 if yuv420 is zero (default) "
+		"or YUV420 if yuv420 is 1, if fourcc keyword is set that will "
+		"be the fourcc pixel format used."
+	},
+	{
+		"set_fps", (PyCFunction)video_capdevice_set_fps, METH_VARARGS,
+		"set_fps(fps) -> fps \n\n"
+		"Request the video device to set frame per seconds.The device "
+		"may choose another frame rate than requested and will return "
+		"its choice. "
+	},
+	{
+		"set_auto_white_balance",
+		(PyCFunction)video_device_set_auto_wb, METH_VARARGS,
+		"set_auto_white_balance(autowb) -> autowb \n\n"
+		"Request the video device to set auto white balance to value. "
+		"The device may choose another value than requested and will "
+		"return its choice. "
+	},
+	{
+		"get_auto_white_balance",
+		(PyCFunction)video_device_get_auto_wb, METH_NOARGS,
+		"get_auto_white_balance() -> autowb \n\n"
+		"Request the video device to get auto white balance value. "
+	},
+	{
+		"set_white_balance_temperature",
+		(PyCFunction)video_device_set_wb_temperature, METH_VARARGS,
+		"set_white_balance_temperature(temp) -> temp \n\n"
+		"Request the video device to set white balance tempature to "
+		"value. The device may choose another value than requested "
+		"and will return its choice. "
+	},
+	{
+		"get_white_balance_temperature",
+		(PyCFunction)video_device_get_wb_temperature, METH_NOARGS,
+		"get_white_balance_temperature() -> temp \n\n"
+		"Request the video device to get white balance temperature "
+		"value. "
+	},
+	{
+		"set_exposure_auto",
+		(PyCFunction)video_device_set_exposure_auto,
+		METH_VARARGS,
+		"set_exposure_auto(autoexp) -> autoexp \n\n"
+		"Request the video device to set auto exposure to value. The "
+		"device may choose another value than requested and will "
+		"return its choice. "
+	},
+	{
+		"get_exposure_auto",
+		(PyCFunction)video_device_get_exposure_auto,
+		METH_NOARGS,
+		"get_exposure_auto() -> autoexp \n\n"
+		"Request the video device to get auto exposure value. "
+	},
+	{
+		"set_exposure_absolute",
+		(PyCFunction)video_device_set_exposure_absolute,
+		METH_VARARGS,
+		"set_exposure_absolute(exptime) -> exptime \n\n"
+		"Request the video device to set exposure time to value. The "
+		"device may choose another value than requested and will "
+		"return its choice. "
+	},
+	{
+		"get_exposure_absolute",
+		(PyCFunction)video_device_get_exposure_absolute,
+		METH_NOARGS,
+		"get_exposure_absolute() -> exptime \n\n"
+		"Request the video device to get exposure time value. "
+	},
+	{
+		"set_focus_auto", (PyCFunction)video_device_set_focus_auto,
+		METH_VARARGS,
+		"set_auto_focus_auto(autofocus) -> autofocus \n\n"
+		"Request the video device to set auto focuse on or off. The "
+		"device may choose another value than requested and will "
+		"return its choice. "
+	},
+	{
+		"get_focus_auto", (PyCFunction)video_device_get_focus_auto,
+		METH_NOARGS,
+		"get_focus_auto() -> autofocus \n\n"
+		"Request the video device to get auto focus value. "
+	},
+	{
+		"get_framesizes", (PyCFunction)video_device_get_framesizes,
+		METH_VARARGS,
+		"get_framesizes() -> framesizes \n\n"
+		"Request the framesizes suported by the device. "
+	},
+	{
+		"get_frameintervals",
+		(PyCFunction)video_device_get_frameintervals,
+		METH_VARARGS,
+		"get_frameintervals() -> frameintervals \n\n"
+		"Request the frameintervals suported by the device. "
+	},
+	{
+		"start", (PyCFunction)video_capdevice_start, METH_NOARGS,
+		"start()\n\n" "Start video capture."
+	},
+	{
+		"stop", (PyCFunction)video_capdevice_stop, METH_NOARGS,
+		"stop()\n\n" "Stop video capture."
+	},
+	{
+		"create_buffers", (PyCFunction)video_capdevice_create_buffers,
+		METH_VARARGS,
+		"create_buffers(count)\n\n"
+		"Create buffers used for capturing image data. Can only be "
+		"called once for each video device object."
+	},
+	{
+		"queue_all_buffers",
+		(PyCFunction)video_capdevice_queue_all_buffers,
+		METH_NOARGS,
+		"queue_all_buffers()\n\n"
+		"Let the video device fill all buffers created."
+	},
+	{
+		"read", (PyCFunction)video_capdevice_read, METH_NOARGS,
+		"read() -> string\n\n"
+		"Reads image data from a buffer that has been filled by the "
+		"video device. The image data is in RGB och YUV420 format as "
+		"decided by 'set_format'. The buffer is removed from the "
+		"queue. Fails if no buffer is filled. Use select.select to "
+		"check for filled buffers."
+	},
+	{
+		"read_and_queue", (PyCFunction)video_capdevice_read_and_queue,
+		METH_NOARGS,
+		"read_and_queue()\n\n"
+		"Same as 'read', but adds the buffer back to the queue so "
+		"the video device can fill it again."
+	},
+	{
+		NULL
+	}
 };
 
 static PyTypeObject video_device_type = {
