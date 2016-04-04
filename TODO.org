@@ -1,0 +1,7 @@
+* DONE Create a fourcc class
+  CLOSED: [2016-04-01 Fri 18:39]
+* TODO Create a capability class
+* TODO Create a type class
+* TODO Rename VideoFramesizes to VideoFramesize
+* TODO Create a VideoFramesizes class
+* TODO Create a real module
