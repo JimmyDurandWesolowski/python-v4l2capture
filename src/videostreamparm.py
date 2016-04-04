@@ -27,19 +27,6 @@ from pyv4l2 import *
 __all__ = ['VideoStreamParm']
 
 
-BUF_TYPE_NAME = {
-    V4L2_BUF_TYPE_VIDEO_CAPTURE: 'video capture',
-    V4L2_BUF_TYPE_VIDEO_OUTPUT: 'video output',
-    V4L2_BUF_TYPE_VIDEO_OVERLAY: 'video overlay',
-    V4L2_BUF_TYPE_VBI_CAPTURE: 'vbi capture',
-    V4L2_BUF_TYPE_VBI_OUTPUT: 'vbi output',
-    V4L2_BUF_TYPE_SLICED_VBI_CAPTURE: 'sliced vbi capture',
-    V4L2_BUF_TYPE_SLICED_VBI_OUTPUT: 'sliced vbi output',
-    V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY: 'video output overlay',
-    V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE: 'video capture mplane',
-    V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE: 'video output mplane',
-}
-
 class VideoStreamParm(object):
     type = 0
     parm = None
@@ -55,9 +42,22 @@ class VideoStreamParm(object):
     TYPE_SLICED_VBI_OUTPUT = V4L2_BUF_TYPE_SLICED_VBI_OUTPUT
     TYPE_VIDEO_OUTPUT_OVERLAY = V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY
 
+    BUF_TYPE_NAME = {
+        V4L2_BUF_TYPE_VIDEO_CAPTURE: 'video capture',
+        V4L2_BUF_TYPE_VIDEO_OUTPUT: 'video output',
+        V4L2_BUF_TYPE_VIDEO_OVERLAY: 'video overlay',
+        V4L2_BUF_TYPE_VBI_CAPTURE: 'vbi capture',
+        V4L2_BUF_TYPE_VBI_OUTPUT: 'vbi output',
+        V4L2_BUF_TYPE_SLICED_VBI_CAPTURE: 'sliced vbi capture',
+        V4L2_BUF_TYPE_SLICED_VBI_OUTPUT: 'sliced vbi output',
+        V4L2_BUF_TYPE_VIDEO_OUTPUT_OVERLAY: 'video output overlay',
+        V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE: 'video capture mplane',
+        V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE: 'video output mplane',
+    }
+
     def __init__(self, **kwds):
         self.__dict__.update(kwds)
 
-    @staticmethod
-    def type_name(value):
-        return BUF_TYPE_NAME[value]
+    @classmethod
+    def type_name(cls, value):
+        return cls.BUF_TYPE_NAME[value]
