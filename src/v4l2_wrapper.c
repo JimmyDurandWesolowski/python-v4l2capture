@@ -987,6 +987,8 @@ static void video_device_members_add(PyObject *module)
 	PyModule_AddIntMacro(module, V4L2_FRMSIZE_TYPE_DISCRETE);
 	PyModule_AddIntMacro(module, V4L2_FRMSIZE_TYPE_CONTINUOUS);
 	PyModule_AddIntMacro(module, V4L2_FRMSIZE_TYPE_STEPWISE);
+
+	PyModule_AddIntMacro(module, V4L2_MODE_HIGHQUALITY);
 }
 
 static PyMethodDef module_methods[] = {
